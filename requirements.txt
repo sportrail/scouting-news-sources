@@ -1,0 +1,2 @@
+# VibeCheck uses the Python standard library only — no dependencies.
+# This file signals the Python runtime to Vercel's @vercel/python builder.

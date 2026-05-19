@@ -33,47 +33,82 @@ from pathlib import Path
 # ─── Paths ────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-LOG_DIR = SCRIPT_DIR / "scout_logs"
+
+
+def _writable_data_dir():
+    """
+    Pick a writable base directory for logs/history/watchlist.
+
+    Locally this is the repo dir. On Vercel (and any read-only serverless
+    bundle) the deployment is read-only and only /tmp is writable, so data
+    lives there. It is ephemeral per warm instance — acceptable for the
+    public demo; durable storage is a separate backing store.
+    """
+    if os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return Path("/tmp")
+    try:
+        probe = SCRIPT_DIR / ".write_probe"
+        probe.write_text("ok")
+        probe.unlink()
+        return SCRIPT_DIR
+    except OSError:
+        return Path("/tmp")
+
+
+DATA_DIR = _writable_data_dir()
+LOG_DIR = DATA_DIR / "scout_logs"
 RUNS_DIR = LOG_DIR / "runs"
 HISTORY_DIR = LOG_DIR / "history"
 AUDIT_LOG = LOG_DIR / "audit.jsonl"
 ERROR_LOG = LOG_DIR / "errors.log"
-WATCHLIST_FILE = SCRIPT_DIR / "watchlist.json"
+
+# Writable watchlist lives in DATA_DIR; a read-only seed ships in the repo.
+WATCHLIST_FILE = DATA_DIR / "watchlist.json"
+WATCHLIST_SEED = SCRIPT_DIR / "watchlist.json"
 
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 # Every run, every result, every failure. Full audit trail.
 
 def _ensure_dirs():
-    LOG_DIR.mkdir(exist_ok=True)
-    RUNS_DIR.mkdir(exist_ok=True)
-    HISTORY_DIR.mkdir(exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def log_run(entry):
-    """Append one JSON line to audit.jsonl and save full run to runs/."""
-    _ensure_dirs()
+    """Append one JSON line to audit.jsonl and save full run to runs/.
 
-    # Append to audit trail (one line per run)
-    with open(AUDIT_LOG, "a") as f:
-        f.write(json.dumps(entry, default=str) + "\n")
+    Best-effort: a logging failure must never break a user-facing request.
+    """
+    try:
+        _ensure_dirs()
 
-    # Save full run file
-    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", entry.get("player", "unknown"))
-    ts = entry.get("timestamp", datetime.now().isoformat()).replace(":", "-")
-    run_file = RUNS_DIR / f"{ts}_{safe_name}.json"
-    with open(run_file, "w") as f:
-        json.dump(entry, f, indent=2, default=str)
+        # Append to audit trail (one line per run)
+        with open(AUDIT_LOG, "a") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
 
-    return str(run_file)
+        # Save full run file
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", entry.get("player", "unknown"))
+        ts = entry.get("timestamp", datetime.now().isoformat()).replace(":", "-")
+        run_file = RUNS_DIR / f"{ts}_{safe_name}.json"
+        with open(run_file, "w") as f:
+            json.dump(entry, f, indent=2, default=str)
+
+        return str(run_file)
+    except OSError:
+        return None
 
 
 def log_error(error_msg, player="unknown", context=""):
-    """Log errors to errors.log."""
-    _ensure_dirs()
-    ts = datetime.now().isoformat()
-    with open(ERROR_LOG, "a") as f:
-        f.write(f"[{ts}] player={player} | {error_msg} | {context}\n")
+    """Log errors to errors.log. Best-effort."""
+    try:
+        _ensure_dirs()
+        ts = datetime.now().isoformat()
+        with open(ERROR_LOG, "a") as f:
+            f.write(f"[{ts}] player={player} | {error_msg} | {context}\n")
+    except OSError:
+        pass
 
 
 def get_recent_logs(limit=50):
@@ -98,8 +133,11 @@ def _player_slug(name):
 
 
 def record_history(player_name, score, articles_found, red_flags, green_flags):
-    """Append one data point to a player's history file."""
-    _ensure_dirs()
+    """Append one data point to a player's history file. Best-effort."""
+    try:
+        _ensure_dirs()
+    except OSError:
+        return
     slug = _player_slug(player_name)
     history_file = HISTORY_DIR / f"{slug}.jsonl"
     entry = {
@@ -110,8 +148,11 @@ def record_history(player_name, score, articles_found, red_flags, green_flags):
         "red_categories": list(red_flags.keys()) if red_flags else [],
         "green_categories": list(green_flags.keys()) if green_flags else [],
     }
-    with open(history_file, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    try:
+        with open(history_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
 
 
 def get_history(player_name, limit=365):
@@ -975,6 +1016,8 @@ def run_scout(player_name, days=14, trigger="manual"):
 def load_watchlist():
     if WATCHLIST_FILE.exists():
         return json.loads(WATCHLIST_FILE.read_text())
+    if WATCHLIST_SEED.exists():
+        return json.loads(WATCHLIST_SEED.read_text())
     return {"players": [], "settings": {"days": 14}}
 
 

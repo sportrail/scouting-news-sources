@@ -46,6 +46,24 @@ python3 scout_scheduler.py --install-cron   # install crontab entry
 - **Index** (`/index`) — All players ranked by risk
 - **Player Cards** (`/player/<name>`) — Shareable public score cards
 
+## Deploy (Vercel)
+
+The web UI runs as a single Python serverless function on Vercel.
+
+- `api/index.py` — serverless entrypoint (reuses the stdlib HTTP handler)
+- `vercel.json` — rewrites every route to the function, bundles shared modules
+- `requirements.txt` — signals the Python runtime (no dependencies)
+
+```bash
+vercel        # preview deploy
+vercel --prod # production deploy
+```
+
+Note: Vercel's filesystem is read-only except `/tmp`, which is ephemeral
+per warm instance. Logs/history/watchlist auto-fall back to `/tmp` in that
+environment (seeded from the bundled `watchlist.json`); durable history
+needs an external store and is a follow-up.
+
 ## Logging
 
 Every run writes to:
